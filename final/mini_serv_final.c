@@ -1,4 +1,3 @@
-//START COPY
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -7,15 +6,17 @@
 #include <netdb.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-//END COPY
 
-#include <sys/select.h> // A ajouter : select, fd_set et FD_SETSIZE.
+#include <sys/select.h>
 
-int count, sockfd;
+int sockfd;
+fd_set afds, rfds, wfds;
+char *out[FD_SETSIZE]
+char *in[FD_SETSIZE];
+
+int count;
 int ids[FD_SETSIZE];
-char *in[FD_SETSIZE], *out[FD_SETSIZE];
-char *msg; /* Ligne extraite : reste accessible en cas d'erreur. */
-fd_set rfds, wfds, afds;
+char *msg;
 char buf_read[1001], buf_write[64];
 
 //START COPY
