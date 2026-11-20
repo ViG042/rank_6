@@ -2,9 +2,13 @@
 """Tests simules de mini_serv avec select : readiness, allocations et fermetures.
 
 Usage : python3 tests/test_mini_serv_select.py [chemin/solution.c] [--valgrind]
+Ajouter --compare pour comparer des implementations : pas de contrainte sur
+les arguments supplementaires ou le nettoyage explicite avant exit ; une
+allocation injectee qui n'est jamais atteinte est notee non applicable.
 Le simulateur ne remplace pas les essais TCP ni le correcteur de l'examen.
 """
 import pathlib
+import resource
 import subprocess
 import sys
 import tempfile
@@ -81,11 +85,16 @@ int __wrap_listen(int fd, int backlog)
 static void verify(void)
 {
     if (EXPECT_FATAL)
+    {
+        if (COMPARISON && (FAIL_ALLOC > allocation_calls || FAIL_CALLOC > calloc_calls))
+            exit(77); /* L'allocation visee n'existe pas dans ce parcours. */
         fail("Fatal error et exit(1) étaient attendus");
+    }
     for (int fd = 4; fd < 32; ++fd)
     {
         const char *want = expected[fd] ? expected[fd] : "";
-        if (strcmp(received[fd], want))
+        if (strcmp(received[fd], want)
+            && (!alternative[fd] || strcmp(received[fd], alternative[fd])))
         {
             fprintf(stderr, "SIMULATION: sortie incorrecte sur fd %d "
                 "(attendu %zu octets, reçu %zu)\n", fd,
@@ -269,6 +278,10 @@ def harness_source(case):
         f'    [{fd}] = {c_string(msg)},\n'
         for fd, msg in case['expected'].items()
     ) + '    [0] = NULL\n};'
+    expected_code += '\nstatic const char *alternative[32] = {\n' + ''.join(
+        f'    [{fd}] = {c_string(msg)},\n'
+        for fd, msg in case.get('alternatives', {}).items()
+    ) + '    [0] = NULL\n};'
     source = HARNESS.replace('EVENTS', event_code).replace('EXPECTED', expected_code)
     for option in ('FAIL_ALLOC', 'FAIL_CALLOC', 'FAIL_BIND', 'EXPECT_FATAL',
                    'SKIP_WRITABLE', 'SHORT_SEND'):
@@ -279,9 +292,11 @@ def harness_source(case):
 
 
 def main():
-    arguments = [arg for arg in sys.argv[1:] if arg != '--valgrind']
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    arguments = [arg for arg in sys.argv[1:] if arg not in ('--valgrind', '--compare')]
     source = pathlib.Path(arguments[0] if arguments else pathlib.Path(__file__).resolve().parents[1] / 'mini_serv_select_simple_2.c')
     use_valgrind = '--valgrind' in sys.argv[1:]
+    comparison = '--compare' in sys.argv[1:]
     global HARNESS
     code = HARNESS
     code = code.replace('static char received[32][65536];',
@@ -307,13 +322,14 @@ def main():
     void __real_exit(int status) __attribute__((noreturn));
     void __wrap_exit(int status)
     {
-        if (status == 1)
+        if (status == 1 && CHECK_EXIT_CLEANUP)
             for (int fd = 3; fd < 32; fd++)
                 if (live[fd]) fail("fd non ferme lors de Fatal error");
         __real_exit(status);
     }
     '''
-    HARNESS = code
+    code = code.replace('CHECK_EXIT_CLEANUP', str(int(not comparison)))
+    HARNESS = code.replace('COMPARISON', str(int(comparison)))
     cases = [{**case, 'options': dict(case['options'])} for case in CASES]
     for case in cases:
         if len(case['args']) > 1:
@@ -340,7 +356,16 @@ def main():
                       events=CONNECT + [(2, 4, 'bon'), (2, 4, 'jour\n')],
                       returncode=1, stderr=b'Fatal error\n', FAIL_ALLOC=allocation, EXPECT_FATAL=1))
 
-    failures = 0
+    if comparison:
+        cases = [case for case in cases if len(case['args']) <= 1]
+    for case in cases:
+        if case['name'] in ('Lecture ferme un client egalement pret en ecriture',
+                            'Depart avec sortie en attente puis reutilisation du fd'):
+            # L'annonce peut avoir ete envoyee avant la fermeture, ou encore
+            # en attente et abandonnee quand ce client se deconnecte.
+            case['alternatives'] = {4: ARRIVED}
+
+    failures = skipped = 0
     with tempfile.TemporaryDirectory(prefix='rank6-select-checks-') as directory:
         temp = pathlib.Path(directory)
         obj, harness, binary = temp / 'student.o', temp / 'harness.c', temp / 'server'
@@ -360,12 +385,18 @@ def main():
                 command = ['valgrind', '--quiet', '--leak-check=full',
                            '--errors-for-leak-kinds=definite,indirect', '--error-exitcode=99', *command]
             result = subprocess.run(command, capture_output=True, timeout=10)
+            if comparison and result.returncode == 77 and not result.stderr and not result.stdout:
+                skipped += 1
+                print('NON APPLICABLE ' + case['name'], flush=True)
+                continue
             success = (result.returncode == case['returncode'] and result.stderr == case['stderr']
                        and not result.stdout)
             failures += not success
             print(('OK ' if success else 'ECHEC ') + case['name'], flush=True)
             if not success: print(result.returncode, result.stderr, flush=True)
-    print(f'{source.name} : {len(cases) - failures}/{len(cases)} tests reussis', flush=True)
+    applicable = len(cases) - skipped
+    print(f'{source.name} : {applicable - failures}/{applicable} tests applicables reussis'
+          f', {skipped} non applicables', flush=True)
     return int(bool(failures))
 
 
