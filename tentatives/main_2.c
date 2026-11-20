@@ -78,7 +78,6 @@ int main(int ac, char **av) {
 		write(2, "Wrong number of arguments\n", 26);
 		return (1);
 	}
-
 	FD_ZERO(&afds);
 
 	int connfd;
@@ -92,19 +91,12 @@ int main(int ac, char **av) {
 	servaddr.sin_addr.s_addr = htonl(2130706433);
 	servaddr.sin_port = htons(atoi(av[1])); 
 
-	// Binding newly created socket to given IP and verification 
 	if ((bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr))) != 0) { 
 		fatal_error();
 	} 
-	
 	if (listen(sockfd, 10) != 0) {
 		fatal_error();
 	}
-
-	connfd = accept(sockfd, (struct sockaddr *)&cli, &len);
-	if (connfd < 0) { 
-        	fatal_error(); 
-    } 
     
 	while (1) {
 		rfds = afds;

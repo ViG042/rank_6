@@ -164,6 +164,7 @@ int main(int ac, char **av) {
     }
     FD_ZERO(&afds); // AJOUTER avant le bloc recopie : initialiser l'ensemble.
 
+    /* START COPY-PASTE FROM MAIN */
     int connfd; // MODIFIER
     struct sockaddr_in servaddr; // MODIFIER
 
@@ -178,8 +179,6 @@ int main(int ac, char **av) {
     if ((bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr))) != 0) {
         fatal_error();
     }
-
-
     if (listen(sockfd, 10) != 0) {
         fatal_error();
     }
