@@ -102,7 +102,11 @@ void notify_other(int author, char *text) {
             append(&out[fd], text);
 }
 
-void register_client(int fd) {
+void accept_client(void) {
+    int fd = accept(sockfd, NULL, NULL);
+
+    if (fd < 0)
+        return;
     add_fd(fd);
     ids[fd] = count++;
     sprintf(buf_write, "server: client %d just arrived\n", ids[fd]);
@@ -112,10 +116,13 @@ void register_client(int fd) {
 void remove_client(int fd) {
     FD_CLR(fd, &afds);
     FD_CLR(fd, &wfds); // Annuler aussi l'envoi prevu pour ce tour.
+
     free(in[fd]);
     free(out[fd]);
+
     in[fd] = out[fd] = NULL;
     close(fd);
+    
     sprintf(buf_write, "server: client %d just left\n", ids[fd]);
     notify_other(fd, buf_write);
 }
@@ -160,17 +167,14 @@ void flush_output(int fd) {
 int main(int ac, char **av) {
     if (ac < 2) {
         write(2, "Wrong number of arguments\n", 26);
-        return 1;
+        return (1);
     }
-    FD_ZERO(&afds); // AJOUTER avant le bloc recopie : initialiser l'ensemble.
-
     /* START COPY-PASTE FROM MAIN */
-    int connfd; // MODIFIER
-    struct sockaddr_in servaddr; // MODIFIER
-
+    FD_ZERO(&afds); // AJOUTER
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     add_fd(sockfd); // AJOUTER
     
+    struct sockaddr_in servaddr; // MODIFIER
     bzero(&servaddr, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = htonl(2130706433);
@@ -183,26 +187,24 @@ int main(int ac, char **av) {
         fatal_error();
     }
     /* END COPY-PASTE FROM MAIN */
-
+    
     while (1) {
         rfds = afds;
-
         FD_ZERO(&wfds);
-        for (int fd = 0; fd < FD_SETSIZE; fd++)
+        for (int fd = 0; fd < FD_SETSIZE; fd++) {
             if (out[fd])
                 FD_SET(fd, &wfds);
-
-        if (select(FD_SETSIZE, &rfds, &wfds, NULL, NULL) < 0)
+        }
+        if (select(FD_SETSIZE, &rfds, &wfds, NULL, NULL) < 0) {
             fatal_error();
-
-        if (FD_ISSET(sockfd, &rfds)) {
-            connfd = accept(sockfd, NULL, NULL);
-            if (connfd >= 0)
-                register_client(connfd);
         }
         for (int fd = 0; fd < FD_SETSIZE; fd++) {
-            if (fd != sockfd && FD_ISSET(fd, &rfds))
-                receive_message(fd);
+            if (FD_ISSET(fd, &rfds)) {
+                if (fd == sockfd)
+                    accept_client();
+                else
+                    receive_message(fd);
+            }
             if (FD_ISSET(fd, &wfds))
                 flush_output(fd);
         }

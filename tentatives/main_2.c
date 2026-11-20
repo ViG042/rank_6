@@ -101,11 +101,11 @@ int main(int ac, char **av) {
 	while (1) {
 		rfds = afds;
 		FD_ZERO(&wfds);
-		for (int n = 0; n < FD_SETSIZE; n++)
-			if (out[n])
-				FD_SET(n, &wfds);
+		for (int fd = 0; fd < FD_SETSIZE; fd++)
+			if (out[fd])
+				FD_SET(fd, &wfds);
 		
-		if (select(rfds, wfds, NULL, NULL) <= 0) {
+		if (select(FD_SETSIZE, &rfds, &wfds, NULL, NULL) < 0) {
 			fatal_error();
 		}
 
