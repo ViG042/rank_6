@@ -8,14 +8,12 @@
 #include <netinet/in.h>
 #include <sys/select.h> //ADD
 
-int sockfd;
+int sockfd, count;
 fd_set afds, rfds, wfds;
-char *out[FD_SETSIZE];
-char *in[FD_SETSIZE];
-int count;
+char *out[FD_SETSIZE], *in[FD_SETSIZE];
 int ids[FD_SETSIZE];
-char buf_notify[64];
 char *msg;
+char buf_notify[64];
 char buf_recv[1024];
 
 void clean_fd(int fd) {
@@ -96,9 +94,9 @@ int add_fd(int fd) {
     return (1);
 }
 
-void notify_other(int author, char *text) {
+void noutify_outher(int outhor, char *text) {
     for (int fd = 0; fd < FD_SETSIZE; fd++)
-        if (FD_ISSET(fd, &afds) && fd != sockfd && fd != author)
+        if (FD_ISSET(fd, &afds) && fd != sockfd && fd != outhor)
             out[fd] = str_join(out[fd], text);
 }
 
@@ -106,10 +104,9 @@ void accept_client(void) {
     int fd = accept(sockfd, NULL, NULL);
     if (!add_fd(fd))
         return;
-
     ids[fd] = count++;
     sprintf(buf_notify, "server: client %d just arrived\n", ids[fd]);
-    notify_other(fd, buf_notify);
+    noutify_outher(fd, buf_notify);
 }
 
 void recv_in(int fd) {
@@ -118,7 +115,7 @@ void recv_in(int fd) {
         if (n == 0) {
             clean_fd(fd);
             sprintf(buf_notify, "server: client %d just left\n", ids[fd]);
-            notify_other(fd, buf_notify);
+            noutify_outher(fd, buf_notify);
         }
         return;
     }
@@ -126,8 +123,8 @@ void recv_in(int fd) {
     in[fd] = str_join(in[fd], buf_recv);
     while (extract_message(&in[fd], &msg)) {
         sprintf(buf_notify, "client %d: ", ids[fd]);
-        notify_other(fd, buf_notify);
-        notify_other(fd, msg);
+        noutify_outher(fd, buf_notify);
+        noutify_outher(fd, msg);
         free(msg);
     }
 }
@@ -193,5 +190,4 @@ int main(int ac, char **av) {
         }
     }
 }
-
-// rfds → recv → in → extraction line → out → wfds → send
+// rfds → recv → in → extract_line → out → wfds → send
