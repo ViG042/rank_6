@@ -11,13 +11,25 @@
 
 int sockfd;
 fd_set afds, rfds, wfds;
-char *out[FD_SETSIZE]
+char *out[FD_SETSIZE];
 char *in[FD_SETSIZE];
 
 int count;
 int ids[FD_SETSIZE];
 char *msg;
 char buf_read[1001], buf_write[64];
+
+void fatal_error(void) {
+    write(2, "Fatal error\n", 12);
+    free(msg);
+    for (int fd = 0; fd < FD_SETSIZE; fd++) {
+        free(in[fd]);
+        free(out[fd]);
+        if (FD_ISSET(fd, &afds))
+            close(fd);
+    }
+    exit(1);
+}
 
 //START COPY
 int extract_message(char **buf, char **msg)
@@ -58,7 +70,7 @@ char *str_join(char *buf, char *add)
 		len = strlen(buf);
 	newbuf = malloc(sizeof(*newbuf) * (len + strlen(add) + 1));
 	if (newbuf == 0)
-		return (0);
+		fatal_error(); //MODIFIER : remplacer return (0).
 	newbuf[0] = 0;
 	if (buf != 0)
 		strcat(newbuf, buf);
@@ -68,47 +80,28 @@ char *str_join(char *buf, char *add)
 }
 //END COPY
 
-void fatal_error(void) {
-    write(2, "Fatal error\n", 12);
-    free(msg);
-    for (int fd = 0; fd < FD_SETSIZE; fd++) {
-        free(in[fd]);
-        free(out[fd]);
-        if (FD_ISSET(fd, &afds))
-            close(fd);
-    }
-    exit(1);
-}
-
-void add_fd(int fd) {
+/* Renvoie 1 si le fd est ajoute, 0 sinon. */
+int add_fd(int fd) {
     if (fd < 0 || fd >= FD_SETSIZE) {
         if (fd >= 0)
             close(fd);
-        fatal_error();
+        return (0);
     }
     FD_SET(fd, &afds);
-}
-
-/* Conserver l'ancien pointeur si str_join echoue. */
-void append(char **buf, char *text) {
-    char *newbuf = str_join(*buf, text);
-    if (!newbuf)
-        fatal_error();
-    *buf = newbuf;
+    return (1);
 }
 
 void notify_other(int author, char *text) {
     for (int fd = 0; fd < FD_SETSIZE; fd++)
         if (FD_ISSET(fd, &afds) && fd != sockfd && fd != author)
-            append(&out[fd], text);
+            out[fd] = str_join(out[fd], text);
 }
 
 void accept_client(void) {
     int fd = accept(sockfd, NULL, NULL);
-
-    if (fd < 0)
+    if (!add_fd(fd))
         return;
-    add_fd(fd);
+
     ids[fd] = count++;
     sprintf(buf_write, "server: client %d just arrived\n", ids[fd]);
     notify_other(fd, buf_write);
@@ -137,7 +130,7 @@ void receive_message(int fd) {
         return;
     }
     buf_read[n] = '\0';
-    append(&in[fd], buf_read);
+    in[fd] = str_join(in[fd], buf_read);
     int status;
     while ((status = extract_message(&in[fd], &msg)) == 1) {
         sprintf(buf_write, "client %d: ", ids[fd]);
@@ -173,7 +166,8 @@ int main(int ac, char **av) {
     /* START COPY-PASTE FROM MAIN */
     FD_ZERO(&afds); // AJOUTER
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    add_fd(sockfd); // AJOUTER
+    if (!add_fd(sockfd)) // AJOUTER : l'ecoute est indispensable.
+        fatal_error(); // AJOUTER
     
     struct sockaddr_in servaddr; // MODIFIER
     bzero(&servaddr, sizeof(servaddr));

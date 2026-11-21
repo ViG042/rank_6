@@ -32,6 +32,7 @@ EVENTS
 EXPECTED
 static size_t event_index, read_offset;
 static int idle_count, live[32], allocation_calls, calloc_calls;
+static int outside_fd = -1; /* Fd ouvert hors de la capacite de fd_set. */
 static char received[32][65536];
 static size_t received_len[32];
 
@@ -66,6 +67,11 @@ int __wrap_socket(int domain, int type, int protocol)
 {
     if (domain != AF_INET || type != SOCK_STREAM || protocol != 0)
         fail("socket TCP IPv4 attendue");
+    if (HIGH_SOCKET)
+    {
+        outside_fd = FD_SETSIZE;
+        return outside_fd;
+    }
     live[3] = 1;
     return 3;
 }
@@ -84,6 +90,8 @@ int __wrap_listen(int fd, int backlog)
 
 static void verify(void)
 {
+    if (outside_fd >= 0)
+        fail("fd hors limite non ferme");
     if (EXPECT_FATAL)
     {
         if (COMPARISON && (FAIL_ALLOC > allocation_calls || FAIL_CALLOC > calloc_calls))
@@ -148,6 +156,15 @@ int __wrap_accept(int fd, struct sockaddr *addr, socklen_t *len)
         || events[event_index].kind != 1)
         fail("accept appelé sans connexion prête");
     int client = events[event_index++].fd;
+    if (client < 0)
+        return client;
+    if (client >= FD_SETSIZE)
+    {
+        outside_fd = client;
+        return client;
+    }
+    if (client >= 32)
+        fail("fd client non pris en charge par le simulateur");
     live[client] = 1;
     return client;
 }
@@ -194,6 +211,11 @@ ssize_t __wrap_send(int fd, const void *buf, size_t size, int flags)
 
 int __wrap_close(int fd)
 {
+    if (outside_fd >= 0 && fd == outside_fd)
+    {
+        outside_fd = -1;
+        return 0;
+    }
     if (fd < 3 || fd >= 32 || !live[fd])
         fail("close sur un descripteur invalide");
     live[fd] = 0;
@@ -325,6 +347,8 @@ def main():
         if (status == 1 && CHECK_EXIT_CLEANUP)
             for (int fd = 3; fd < 32; fd++)
                 if (live[fd]) fail("fd non ferme lors de Fatal error");
+        if (status == 1 && CHECK_EXIT_CLEANUP && outside_fd >= 0)
+            fail("fd hors limite non ferme lors de Fatal error");
         __real_exit(status);
     }
     '''
@@ -356,6 +380,18 @@ def main():
                       events=CONNECT + [(2, 4, 'bon'), (2, 4, 'jour\n')],
                       returncode=1, stderr=b'Fatal error\n', FAIL_ALLOC=allocation, EXPECT_FATAL=1))
 
+    cases.append(scenario('Socket d’ecoute egale a FD_SETSIZE', events=[],
+                          returncode=1, stderr=b'Fatal error\n', HIGH_SOCKET=1))
+    # Apres un refus, un nouveau client valide doit recevoir l'id 2.
+    # Les clients existants doivent toujours recevoir ses annonces et messages.
+    for rejected, description in ((-1, 'negatif'),
+                                  ('FD_SETSIZE', 'egal a FD_SETSIZE'),
+                                  ('FD_SETSIZE + 1', 'superieur a FD_SETSIZE')):
+        cases.append(scenario('Accept ' + description + ' puis connexion valide',
+            events=CONNECT + [(1, rejected, ''), (1, 6, ''), (2, 6, 'retour\n')],
+            expected={4: ARRIVED + 'server: client 2 just arrived\nclient 2: retour\n',
+                      5: 'server: client 2 just arrived\nclient 2: retour\n'}))
+
     if comparison:
         cases = [case for case in cases if len(case['args']) <= 1]
     for case in cases:
@@ -375,7 +411,8 @@ def main():
                  'close', 'malloc', 'calloc', 'realloc', 'exit']
         for case in cases:
             text = harness_source(case)
-            for option in ('FAIL_SOCKET', 'FAIL_LISTEN', 'FAIL_SELECT', 'RETRY_SEND', 'RETRY_RECV'):
+            for option in ('FAIL_SOCKET', 'FAIL_LISTEN', 'FAIL_SELECT', 'RETRY_SEND',
+                           'RETRY_RECV', 'HIGH_SOCKET'):
                 text = text.replace(option, str(case['options'].get(option, 0)))
             harness.write_text(text)
             subprocess.run(['gcc', '-Wall', '-Wextra', '-Werror', str(harness), str(obj),
