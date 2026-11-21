@@ -6,28 +6,34 @@
 #include <netdb.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-
-#include <sys/select.h>
+#include <sys/select.h> //ADD
 
 int sockfd;
 fd_set afds, rfds, wfds;
 char *out[FD_SETSIZE];
 char *in[FD_SETSIZE];
-
 int count;
 int ids[FD_SETSIZE];
+char buf_notify[64];
 char *msg;
-char buf_read[1001], buf_write[64];
+char buf_recv[1024];
+
+void clean_fd(int fd) {
+    free(in[fd]);
+    free(out[fd]);
+    in[fd] = NULL;
+    out[fd] = NULL;
+    if (FD_ISSET(fd, &afds))
+        close(fd);
+    FD_CLR(fd, &afds);
+    FD_CLR(fd, &wfds);
+}
 
 void fatal_error(void) {
     write(2, "Fatal error\n", 12);
     free(msg);
-    for (int fd = 0; fd < FD_SETSIZE; fd++) {
-        free(in[fd]);
-        free(out[fd]);
-        if (FD_ISSET(fd, &afds))
-            close(fd);
-    }
+    for (int fd = 0; fd < FD_SETSIZE; fd++)
+        clean_fd(fd);
     exit(1);
 }
 
@@ -47,7 +53,7 @@ int extract_message(char **buf, char **msg)
 		{
 			newbuf = calloc(1, sizeof(*newbuf) * (strlen(*buf + i + 1) + 1));
 			if (newbuf == 0)
-				return (-1);
+				fatal_error(); //MODIFY
 			strcpy(newbuf, *buf + i + 1);
 			*msg = *buf;
 			(*msg)[i + 1] = 0;
@@ -70,7 +76,7 @@ char *str_join(char *buf, char *add)
 		len = strlen(buf);
 	newbuf = malloc(sizeof(*newbuf) * (len + strlen(add) + 1));
 	if (newbuf == 0)
-		fatal_error(); //MODIFIER : remplacer return (0).
+		fatal_error(); //MODIFY
 	newbuf[0] = 0;
 	if (buf != 0)
 		strcat(newbuf, buf);
@@ -80,7 +86,6 @@ char *str_join(char *buf, char *add)
 }
 //END COPY
 
-/* Renvoie 1 si le fd est ajoute, 0 sinon. */
 int add_fd(int fd) {
     if (fd < 0 || fd >= FD_SETSIZE) {
         if (fd >= 0)
@@ -103,53 +108,35 @@ void accept_client(void) {
         return;
 
     ids[fd] = count++;
-    sprintf(buf_write, "server: client %d just arrived\n", ids[fd]);
-    notify_other(fd, buf_write);
+    sprintf(buf_notify, "server: client %d just arrived\n", ids[fd]);
+    notify_other(fd, buf_notify);
 }
 
-void remove_client(int fd) {
-    FD_CLR(fd, &afds);
-    FD_CLR(fd, &wfds); // Annuler aussi l'envoi prevu pour ce tour.
-
-    free(in[fd]);
-    free(out[fd]);
-
-    in[fd] = out[fd] = NULL;
-    close(fd);
-    
-    sprintf(buf_write, "server: client %d just left\n", ids[fd]);
-    notify_other(fd, buf_write);
-}
-
-/* Toute la reception : lire, conserver le morceau, extraire les lignes. */
-void receive_message(int fd) {
-    int n = recv(fd, buf_read, 1000, MSG_DONTWAIT);
+void recv_in(int fd) {
+    int n = recv(fd, buf_recv, sizeof(buf_recv) - 1, MSG_DONTWAIT);
     if (n <= 0) {
-        if (n == 0)
-            remove_client(fd);
+        if (n == 0) {
+            clean_fd(fd);
+            sprintf(buf_notify, "server: client %d just left\n", ids[fd]);
+            notify_other(fd, buf_notify);
+        }
         return;
     }
-    buf_read[n] = '\0';
-    in[fd] = str_join(in[fd], buf_read);
-    int status;
-    while ((status = extract_message(&in[fd], &msg)) == 1) {
-        sprintf(buf_write, "client %d: ", ids[fd]);
-        notify_other(fd, buf_write);
+    buf_recv[n] = '\0';
+    in[fd] = str_join(in[fd], buf_recv);
+    while (extract_message(&in[fd], &msg)) {
+        sprintf(buf_notify, "client %d: ", ids[fd]);
+        notify_other(fd, buf_notify);
         notify_other(fd, msg);
         free(msg);
     }
-    if (status == -1)
-        fatal_error();
 }
 
-void flush_output(int fd) {
+void send_out(int fd) {
     size_t len = strlen(out[fd]);
     ssize_t n = send(fd, out[fd], len, MSG_DONTWAIT | MSG_NOSIGNAL);
-
-    /* Linux : ne pas bloquer ni quitter sur SIGPIPE. */
     if (n <= 0)
         return;
-    /* Retirer les octets envoyes, puis liberer si tout est parti. */
     for (size_t i = 0; i <= len - (size_t)n; i++)
         out[fd][i] = out[fd][i + n];
     if (!out[fd][0]) {
@@ -163,17 +150,18 @@ int main(int ac, char **av) {
         write(2, "Wrong number of arguments\n", 26);
         return (1);
     }
-    /* START COPY-PASTE FROM MAIN */
-    FD_ZERO(&afds); // AJOUTER
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (!add_fd(sockfd)) // AJOUTER : l'ecoute est indispensable.
-        fatal_error(); // AJOUTER
     
-    struct sockaddr_in servaddr; // MODIFIER
+    //START COPY
+    FD_ZERO(&afds);      //ADD
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (!add_fd(sockfd)) //ADD
+        fatal_error();   //ADD
+    
+    struct sockaddr_in servaddr;            //MODIFY
     bzero(&servaddr, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = htonl(2130706433);
-    servaddr.sin_port = htons(atoi(av[1])); // MODIFIER
+    servaddr.sin_port = htons(atoi(av[1])); //MODIFY
 
     if ((bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr))) != 0) {
         fatal_error();
@@ -181,7 +169,7 @@ int main(int ac, char **av) {
     if (listen(sockfd, 10) != 0) {
         fatal_error();
     }
-    /* END COPY-PASTE FROM MAIN */
+    //END COPY
     
     while (1) {
         rfds = afds;
@@ -198,12 +186,12 @@ int main(int ac, char **av) {
                 if (fd == sockfd)
                     accept_client();
                 else
-                    receive_message(fd);
+                    recv_in(fd);
             }
             if (FD_ISSET(fd, &wfds))
-                flush_output(fd);
+                send_out(fd);
         }
     }
 }
 
-// rfds → recv → in[5] → extraction d’une ligne → out[4] → socket 4 prête dans wfds → send
+// rfds → recv → in → extraction line → out → wfds → send
